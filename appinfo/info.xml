@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<info xmlns:xsi= "http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <!--
+    SPDX-FileCopyrightText: Antoon Prins <antoon.prins@surf.nl>
+    SPDX-License-Identifier: CC0-1.0
+    -->
+    <id>surf_trashbin</id>
+    <name>SURF trashbin</name>
+    <summary>SURF functional accounts trashbin.</summary>
+    <description><![CDATA[This app enables trashbin functionality for Research Drive functional accounts.]]></description>
+    <version>0.0.1</version>
+    <licence>agpl</licence>
+    <author mail="antoon.prins@surf.nl" >Antoon Prins</author>
+    <namespace>SURFTrashbin</namespace>
+    <category>integration</category>
+    <bugs>https://github.com/sara-nl/nc-surf_trashbin/issues</bugs>
+    <dependencies>
+        <!-- min-version seems to be 29.0.1 -->
+        <nextcloud min-version="29" max-version="31"/>
+    </dependencies>
+
+</info>
