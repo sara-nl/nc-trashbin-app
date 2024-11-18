@@ -1,5 +1,10 @@
 <?php
 
+/**
+ * This class enhances the trashbin delete event with SURF trashbin related functionality.
+ * 
+ */
+
 namespace OCA\SURFTrashbin\Hooks;
 
 use Exception;
@@ -29,6 +34,12 @@ class TrashbinHook
         $this->trashbinMapper = $trashbinMapper;
     }
 
+    /**
+     * The method called when a node is permanently deleted.
+     * 
+     * @param array $params ['path' => {path}]
+     * @return void
+     */
     public function permanentDelete(array $params): void
     {
         // get the filecache items and find out if we are dealing with an f_account item
@@ -63,12 +74,11 @@ class TrashbinHook
 
         $fAccountView = new View("/$fAccountUID");
         $fAccountView->unlink($fAccountFileCacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
-        
+
         if (isset($ownerOrUserFileCacheItem)) {
             $ownerOrUserView = new View("/$ownerOrUserUserUID");
             $ownerOrUserView->unlink($ownerOrUserFileCacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
         }
-
 
         // retrieve the trashbin items so we can delete them from the table
         [$fileOrFoldername, $timestamp] = $this->trashbinService->getNameAndTimestamp($name);
