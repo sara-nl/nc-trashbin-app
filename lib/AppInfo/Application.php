@@ -20,8 +20,8 @@ use OCP\AppFramework\Bootstrap\IBootstrap;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\Events\Node\NodeDeletedEvent;
+use OCP\IUserSession;
 use OCP\Util;
-use Psr\Log\LoggerInterface;
 
 class Application extends App implements IBootstrap
 {
@@ -47,7 +47,7 @@ class Application extends App implements IBootstrap
             $this->getContainer()->get(TrashbinService::class),
             $this->getContainer()->get(FileCacheMapper::class),
             $this->getContainer()->get(TrashbinMapper::class),
-            $this->getContainer()->get(LoggerInterface::class)
+            $this->getContainer()->get(IUserSession::class)
         );
         Util::connectHook('\OCP\Trashbin', 'delete', $trashbinHook, 'permanentDelete');
     }

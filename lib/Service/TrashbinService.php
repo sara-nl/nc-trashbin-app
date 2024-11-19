@@ -128,7 +128,6 @@ class TrashbinService
 			$view = new View('/' . $ownerUID);
 			$userView = new View('/' . $sessionUID);
 			$nodePath = 'files_trashbin/files/' . $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME];
-			$this->logger->debug(" creating node $nodePath");
 			if (!$userView->file_exists($nodePath)) {
 				throw new Exception("Node '$nodePath' does not exist for user '$sessionUID'.");
 			}

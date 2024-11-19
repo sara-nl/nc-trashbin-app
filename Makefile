@@ -190,7 +190,12 @@ buildapp:
 	--exclude="$(app_name)/build" \
 	--exclude="$(app_name)/release" \
 	--exclude="$(app_name)/tests" \
-	--exclude="$(app_name)/Makefile" \
+	--exclude="$(app_name)/src" \
+	--exclude="$(app_name)/js" \
+	--exclude="$(app_name)/css" \
+	--exclude="$(app_name)/img" \
+	--exclude="$(app_name)/tests" \
+	--exclude="$(app_name)/vite.config.js" \
 	--exclude="$(app_name)/*.log" \
 	--exclude="$(app_name)/phpunit*xml" \
 	--exclude="$(app_name)/composer.*" \
