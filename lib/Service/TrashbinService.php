@@ -154,6 +154,10 @@ class TrashbinService
 		$userTrashbinItem = null;
 		$ownerTrashbinItem = null;
 		$fAccountTrashbinItem = null;
+		if(isset($fileOrFolderName) && !isset($timestamp)) {
+			// this must be a sub node restored; just return
+			return;
+		}
 		$trashbinItems = $this->trashbinMapper->getItems($fileOrFolderName, $timestamp);
 		if (count($trashbinItems) < 2) {
 			// we are not dealing with restoring a node on an f_account
@@ -391,18 +395,19 @@ class TrashbinService
 
 	/**
 	 * Splits the specified name into name and timestamp parts and returns them.
+	 * If no timestamp postfix is found then only the name is returned, ie. return [$fileOrFoldername, null]
 	 * 
 	 * @param string name
 	 * @return array {string fileOrFoldername, int timestamp}
 	 */
 	public function getNameAndTimestamp(string $name): array
 	{
-		// the name is in format: {folder-or-filename}.d{timestamp}{/any-sub-folder-path}
+		// the name is in format: {file-or-foldername}.d{timestamp}{/any-sub-node-path}
 		// if not ... something entirely different is wrong
 		$exploded = explode(".d", $name);
 		$timestamp = array_pop($exploded);
 		if (!is_numeric($timestamp)) {
-			return [null, null];
+			return [$name, null];
 		}
 		$fileOrFolderName = implode(".d", $exploded);
 		return [$fileOrFolderName, intval($timestamp)];
