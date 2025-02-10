@@ -78,7 +78,6 @@ class TrashbinMapper extends QBMapper
             ->from(self::TABLE_NAME)
             ->where($query->expr()->eq(self::TABLE_COLUMN_ID, $query->createNamedParameter($id)))
             ->andWhere($query->expr()->eq(self::TABLE_COLUMN_TIMESTAMP, $query->createNamedParameter($timestamp)));
-        $this->logger->debug(" SQL: " . print_r($query->getSQL(), true));
         $statement = $query->executeQuery();
         $result = $statement->fetchAll(PDO::FETCH_ASSOC);
         $statement->closeCursor();

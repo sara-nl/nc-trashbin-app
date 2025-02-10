@@ -8,7 +8,6 @@ use Exception;
 use OCP\AppFramework\Db\QBMapper;
 use OCP\IDBConnection;
 use PDO;
-use Psr\Log\LoggerInterface;
 
 class ShareMapper extends QBMapper
 {
@@ -19,25 +18,20 @@ class ShareMapper extends QBMapper
     private const TABLE_COLUMN_UID_OWNER = 'uid_owner';
     private const TABLE_COLUMN_UID_INITIATOR = 'uid_initiator';
 
-    /** @var LoggerInterface */
-    private LoggerInterface $logger;
-
     public function __construct(
         IDBConnection $dbConnection,
-        LoggerInterface $logger
     ) {
         parent::__construct($dbConnection, self::TABLE_NAME);
-        $this->logger = $logger;
     }
 
     /**
-     * Returns the uid of the owner of the functional account group folder.
+     * Returns the uid of the owner of the functional account project folder.
      * 
-     * @param string $fAccountUID the functional account of the group folder.
+     * @param string $fAccountUID the functional account of the project folder.
      * @return string the owner uid or an empty string if not found.
      * @throws Exception if the number of owners found is unexpected.
      */
-    public function getGroupOwnerUID(string $fAccountUID): string
+    public function getProjectOwnerUID(string $fAccountUID): string
     {
         $query = $this->db->getQueryBuilder();
         $query->select('share_with')
@@ -45,7 +39,6 @@ class ShareMapper extends QBMapper
             ->where($query->expr()->eq(self::TABLE_COLUMN_SHARE_TYPE, $query->createNamedParameter(0)))
             ->andWhere($query->expr()->eq(self::TABLE_COLUMN_UID_OWNER, $query->createNamedParameter($fAccountUID)))
             ->andWhere($query->expr()->eq(self::TABLE_COLUMN_UID_INITIATOR, $query->createNamedParameter($fAccountUID)));
-        $this->logger->debug(" SQL: " . print_r($query->getSQL(), true));
         $statement = $query->executeQuery();
         $result = $statement->fetchAll(PDO::FETCH_ASSOC);
         $statement->closeCursor();

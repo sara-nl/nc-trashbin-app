@@ -148,9 +148,13 @@ class FileCacheMapper extends QBMapper
             // return the user item
             if (count($items) == 2) {
                 foreach ($items as $item) {
-                    if ($item[self::TABLE_COLUMN_FILEID] != $fAccountFileid) {
+                    if ($item[self::TABLE_COLUMN_FILEID] == $fAccountFileid) {
                         return $item;
                     }
+                }
+            } else if (count($items) == 1) {
+                if ($items[0][self::TABLE_COLUMN_FILEID] == $fAccountFileid) {
+                    return $items[0];
                 }
             }
             return [];
