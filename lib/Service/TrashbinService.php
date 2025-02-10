@@ -3,16 +3,36 @@
 /**
  * This class implements the logic and mechanisms for the SURF trashbin app.
  * 
+ * The sharing scheme is f_account -> project-owner -> user
+ * (the functional account shares a folder with the project owner, who shares the folder with the users)
+ * 
+ * When a file/folder is deleted by a user:
+ *  . the project owner gets a copy of the deleted node in it's trashbin as well, so the owner can restore it
+ * 
+ * When a file/folder is restored by a user:
+ *  . the trashbin of the project owner will be emptied as well
+ * 
+ * When a file/folder is restored by the project owner:
+ *  . the trashbin of user who deleted the file will be emptied as well
+ * 
+ * After restoring the trashbin/filecache of the f_account is cleaned up as well (which not happen automatically)
+ * 
+ * It does not matter whether project owner or user has quota or not, the effect is the same.
+ * 
  */
 
 namespace OCA\SURFTrashbin\Service;
 
 use Exception;
 use OC\Files\View;
+use OC_Helper;
+use OCA\Files_Trashbin\AppInfo\Application;
 use OCA\SURFTrashbin\Db\FileCacheMapper;
 use OCA\SURFTrashbin\Db\ShareMapper;
 use OCA\SURFTrashbin\Db\TrashbinMapper;
 use OCP\Files\Node;
+use OCP\IUser;
+use OCP\IUserManager;
 use OCP\IUserSession;
 use Psr\Log\LoggerInterface;
 
@@ -31,6 +51,9 @@ class TrashbinService
 	/** @var IUserSession */
 	private $userSession;
 
+	/** @var IUserManager */
+	private $userManager;
+
 	/** @var LoggerInterface */
 	private $logger;
 
@@ -42,127 +65,113 @@ class TrashbinService
 		TrashbinMapper $trashbinMapper,
 		ShareMapper $shareMapper,
 		IUserSession $userSession,
+		IUserManager $userManager,
 		LoggerInterface $logger
 	) {
 		$this->fileCacheMapper = $fileCacheMapper;
 		$this->trashbinMapper = $trashbinMapper;
 		$this->shareMapper = $shareMapper;
 		$this->userSession = $userSession;
+		$this->userManager = $userManager;
 		$this->logger = $logger;
 	}
 
 	/**
-	 * Adds an entry in the trashbin and filecache of the owner of the shared folder from which the specified node was deleted.
-	 * Also create a 0 byte trashbin node for the owner of the shared folder in which the node was deleted by the user.
-	 * The result will be that the owner will also see the deleted node in the trashbin, 
-	 * and be able to restore it just like the user who deleted it in the first place.
+	 * This method makes sure that in case it is a project user who deletes the files
+	 * these files appear in the trashbin of the project owner as well.
 	 * 
 	 * @var Node the deleted node
 	 * @return void
 	 */
 	public function handleDeleteNode(Node $nodeDeleted): void
 	{
-		// are we dealing with an fAccount node?
 		$fAccountFilecacheItem = $this->getFAccountFilecacheItem($nodeDeleted->getId());
 		if (!isset($fAccountFilecacheItem)) {
 			// we are not dealing with a node from a shared f_account folder 
-			$this->logger->debug(' - we are NOT dealing with a node from a shared f_account folder; just return ');
 			return;
 		}
 
 		$userAccountFilecacheItem = $this->fileCacheMapper->getUserforFAccountItem($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_FILEID]);
 		if (\count($userAccountFilecacheItem) == 0) {
-			// we are not dealing with a node deleted by a f_account group user 
-			$this->logger->debug(' - we are NOT dealing with a node deleted by a f_account group user; just return ');
+			// we are not dealing with a node deleted by an f_account project user 
 			return;
 		}
 
-		// find the corresponding trashbin entry of the current user
+		// find the corresponding trashbin entry of the deleted node
 		[$name, $timestamp] = $this->getNameAndTimestamp($userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
-		if (!isset($name) || !isset($timestamp)) {
-			// user is probably restoring a sub folder which does not contain the timestamp
-			return;
-		}
 		$sessionUID = $this->userSession->getUser()->getUID();
+		[$fAccountUID,] = $this->getAccountUIDAndTypeFromStorageId($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_STORAGE_ID]);
+		$projectOwnerUID = $this->shareMapper->getProjectOwnerUID($fAccountUID);
 		[
 			$trashbinItemId,,
 			$trashbinItemTimestamp,
 			$trashbinItemLocation,
 			$trashbinItemDeletedBy
-		] = array_values($this->trashbinMapper->getItem($name, $sessionUID, $timestamp, $sessionUID));
+		] = array_values($this->trashbinMapper->getItem($name, $fAccountUID, $timestamp, $sessionUID));
 
-		// create the shared folder owner copies of the entries; except when the owner is the one deleting the node
-		[$fAccountUID,] = $this->getAccountUIDAndTypeFromStorageId($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_STORAGE_ID]);
-		$ownerUID = $this->shareMapper->getGroupOwnerUID($fAccountUID);
-		if ($sessionUID != $ownerUID) {
+		$sessionUserQuota = self::getUserQuota($this->userSession->getUser());
+		$copyResult = false;
+		if ($sessionUserQuota == 0) {
+			// create the user's trashbin item (it's not created because the user has no quota)
+
+			$this->setUpTrash($sessionUID);
+
 			$this->trashbinMapper->insertItem(
 				$trashbinItemId,
-				$ownerUID,
+				$sessionUID,
 				$trashbinItemTimestamp,
 				$trashbinItemLocation,
 				$trashbinItemDeletedBy,
 			);
+			// and copy the original trashbin file to session user trashbin
+			$copyResult = $this->copyNode($fAccountUID, $sessionUID, $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
 		}
+		if ($sessionUID != $projectOwnerUID) {
+			// create project owner's trashbin item (it's not created because it's a project user that deleted the node)
 
-		// Insert the owner's filecache item.
-		// Note that we do not create the whole tree in case of a folder, the owner does not need to be able to browse it,
-		// but only restore it. Therefore the folder that was being deleted will suffice. No need to add any sub folders or files.
+			$this->setUpTrash($projectOwnerUID);
 
-		// First make sure the trashbin is there; this will also create the trashbin filecache entries 
-		$this->setUpTrash($ownerUID);
-		// the parent is the owner's trashbin root filecache item; we need the owner's storage numeric id
-		$numericStorageId = $this->getNumericStorageId($ownerUID);
-		[FileCacheMapper::TABLE_COLUMN_FILEID => $parentFileId] = $this->fileCacheMapper->getTrashbinRootItem($numericStorageId);
-		// if we are the user: copy and insert the user account filecache item to create a filecache item for the owner
-		// so that the owner will see the deleted node
-		if ($sessionUID !== $ownerUID) {
-			$ownerAccountFilecacheItem = $userAccountFilecacheItem;
-			$ownerAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_STORAGE] = $numericStorageId;
-			$ownerAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_PARENT] = $parentFileId;
-			$this->fileCacheMapper->insertItem($ownerAccountFilecacheItem);
+			$this->trashbinMapper->insertItem(
+				$trashbinItemId,
+				$projectOwnerUID,
+				$trashbinItemTimestamp,
+				$trashbinItemLocation,
+				$trashbinItemDeletedBy,
+			);
+			// and copy the original trashbin file to project owner's trashbin
+			$copyResult = $this->copyNode($fAccountUID, $projectOwnerUID, $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
 		}
-
-		// finally create a 0 byte trashbin node copy for the owner of the f_account folder
-		// this will give the owner the restore/permanent-delete functionality because a file is 'actually there'.
-		if ($sessionUID !== $ownerUID) {
-			$view = new View('/' . $ownerUID);
-			$userView = new View('/' . $sessionUID);
-			$nodePath = 'files_trashbin/files/' . $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME];
-			if (!$userView->file_exists($nodePath)) {
-				throw new Exception("Node '$nodePath' does not exist for user '$sessionUID'.");
-			}
-			if ($userView->is_dir($nodePath)) {
-				$this->logger->debug(" node is dir");
-				$view->mkdir($nodePath);
-			} else {
-				$this->logger->debug(" node is file");
-			}
-			$view->touch($nodePath, $userView->filemtime($nodePath));
+		if (!$copyResult) {
+			$this->logger->error(" handleDeleteNode copy error - node copy from f_account trashbin did not complete.", ['app' => Application::APP_ID]);
+			// TODO ?? throw exception if something went wrong (copyResult is false) ??
 		}
 	}
 
 	/**
-	 * Restores the correct original file if it is the owner that restores it.
 	 * Cleans up any remaining trashbin and filecache table items and storage.
+	 * 
+	 * @param Node $sourceNode the node being restored
 	 */
 	public function handleRestoreNode(Node $sourceNode): void
 	{
 		$name = $sourceNode->getName(); // format: {folder-or-filename}.d{timestamp}{/any-sub-folder-path}
+
 		[$fileOrFolderName, $timestamp] = $this->getNameAndTimestamp($name);
+		if (isset($fileOrFolderName) && !isset($timestamp)) {
+			// this must be a sub node restored; follow normal behaviour and just return
+			return;
+		}
 
 		// get the trashbin items so we can decide what to do
 		$userTrashbinItem = null;
 		$ownerTrashbinItem = null;
 		$fAccountTrashbinItem = null;
-		if(isset($fileOrFolderName) && !isset($timestamp)) {
-			// this must be a sub node restored; just return
-			return;
-		}
 		$trashbinItems = $this->trashbinMapper->getItems($fileOrFolderName, $timestamp);
 		if (count($trashbinItems) < 2) {
 			// we are not dealing with restoring a node on an f_account
 			return;
 		}
+
 		foreach ($trashbinItems as $item) {
 			if (\str_starts_with($item[TrashbinMapper::TABLE_COLUMN_USER], 'f_')) {
 				$fAccountTrashbinItem = $item;
@@ -191,30 +200,14 @@ class TrashbinService
 			}
 		}
 
-		// In case we are the owner and we're restoring a node deleted by another user nextcloud has now restored the 0 bytes copy,
-		// and we must correct this by replacing it with the original node from the user storage.
-		$sessionUID = $this->userSession->getUser()->getUID();
-		$deletedByUID = $fAccountTrashbinItem[TrashbinMapper::TABLE_COLUMN_DELETED_BY];
-		$fAccountOriginalLocation = $fAccountTrashbinItem[TrashbinMapper::TABLE_COLUMN_LOCATION];
 		$fAccountUID = $fAccountTrashbinItem[TrashbinMapper::TABLE_COLUMN_USER];
-		$ownerUID = isset($ownerTrashbinItem) ? $ownerTrashbinItem[TrashbinMapper::TABLE_COLUMN_USER] : null;
-		$deletedByUID = $fAccountTrashbinItem[TrashbinMapper::TABLE_COLUMN_DELETED_BY];
-		if ($sessionUID === $ownerUID && $sessionUID !== $deletedByUID) {
-			$view = new View('');
-			$source = "/$deletedByUID/files_trashbin/files/$name";
-			$location = trim($fAccountOriginalLocation, '/');
-			$target = "/$fAccountUID/files/$location/$fileOrFolderName";
-			self::moveRecursive($view, $source, $target);
-			// and delete the 0 bytes node in the owner's trashbin
-			$view = new View("/$ownerUID");
-			$view->unlink("files_trashbin/files/$name");
-		}
+		$projectOwnerUID = isset($ownerTrashbinItem) ? $ownerTrashbinItem[TrashbinMapper::TABLE_COLUMN_USER] : null;
 
 		// unlink all filecache items
 		$fAccountView = new View("/$fAccountUID");
 		$fAccountView->unlink($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
 		if (isset($ownerFilecacheItem)) {
-			$ownerView = new View("/$ownerUID");
+			$ownerView = new View("/$projectOwnerUID");
 			$ownerView->unlink($ownerFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
 		}
 		if (isset($userFilecacheItem)) {
@@ -233,95 +226,66 @@ class TrashbinService
 		}
 	}
 
-	/**
-	 * Recursive function to move a whole directory
-	 *
-	 * @param View $view file view for the users root directory
-	 * @param string $source source path, relative to the users files directory
-	 * @param string $destination destination path relative to the users root directory
-	 * @return int|float
-	 * @throws Exceptions\CopyRecursiveException
-	 */
-	private static function moveRecursive(View $view, string $source, string $destination): int|float
+	private function copyNode(string $fromUID, string $toUID, string $nodeName): bool
 	{
-		$size = 0;
+		$view = new View("/");
+		$source = "$fromUID/files_trashbin/files/$nodeName";
+		$destination = "$toUID/files_trashbin/files/$nodeName";
+
+		if (!$view->file_exists($source)) {
+			throw new Exception("Node '$source' does not exist for user '$fromUID'.");
+		}
+
+		$fullSourcePath = $this->userManager->get($fromUID)->getHome() . "/files_trashbin/files/$nodeName";
+		$fullDestinationPath = $this->userManager->get($toUID)->getHome() . "/files_trashbin/files/$nodeName";
+
+		$copyResult = $this->copyNodeRecursive($view, $source, $destination, $fullSourcePath, $fullDestinationPath);
+		if (!$copyResult) {
+			$this->logger->error("copyNode error - could not copy '$nodeName' between $fromUID and $toUID trashbins");
+		}
+		return $copyResult;
+	}
+
+	/**
+	 * 
+	 * @param View $sourceView the source view
+	 * @param string $sourceHome the full source home pathh
+	 * @param string $sourcePath the path relative to source home
+	 * @param string $destination full destination path
+	 */
+	private function copyNodeRecursive(View $view, string $source, string $destination, string $fullSourcePath, string $fullDestinationPath): bool
+	{
+		/** @var bool $result */
+		$result = false;
 		if ($view->is_dir($source)) {
-			$view->mkdir($destination);
-			$view->touch($destination, $view->filemtime($source));
+			$result = $view->mkdir($destination);
+			if (!$result) {
+				$this->logger->error("copyNodeRecursive error: Unable to mkdir '$destination'", ['app' => Application::APP_ID]);
+				return $result;
+			}
 			foreach ($view->getDirectoryContent($source) as $i) {
-				$pathDir = $source . '/' . $i['name'];
-				if ($view->is_dir($pathDir)) {
-					$size += self::copy_recursive($view, $pathDir, $destination . '/' . $i['name']);
-				} else {
-					$size += $view->filesize($pathDir);
-					$result = self::move($view, $pathDir, $destination . '/' . $i['name']);
-					if (!$result) {
-						throw new Exception('Recursive move error. Result was: ' . print_r($result, true));
-					}
+				$path = $source . '/' . $i['name'];
+				$target = $destination . '/' . $i['name'];
+				$_fullSourcePath = $fullSourcePath . '/' . $i['name'];
+				$_fullDestinationPath = $fullDestinationPath . '/' . $i['name'];
+				$result = $this->copyNodeRecursive($view, $path, $target, $_fullSourcePath, $_fullDestinationPath);
+				if (!$result) {
+					break;
 				}
 			}
 		} else {
-			$size += $view->filesize($source);
-			$result = self::move($view, $source, $destination);
-			if (!$result) {
-				throw new \OCA\Files_Trashbin\Exceptions\CopyRecursiveException();
-			}
-		}
-		return $size;
-	}
-
-	private static function move(View $view, $source, $target)
-	{
-		/** @var \OC\Files\Storage\Storage $sourceStorage */
-		[$sourceStorage, $sourceInternalPath] = $view->resolvePath($source);
-		/** @var \OC\Files\Storage\Storage $targetStorage */
-		[$targetStorage, $targetInternalPath] = $view->resolvePath($target);
-		/** @var \OC\Files\Storage\Storage $ownerTrashStorage */
-
-		$result = $targetStorage->moveFromStorage($sourceStorage, $sourceInternalPath, $targetInternalPath);
-		if ($result) {
+			// In case the destination user has no quota we must do a low level copy for which we use the full paths
+			$result = @copy($fullSourcePath, $fullDestinationPath);
+			// And update the cache which will create the cache item for this file
+			[$targetStorage, $targetInternalPath] = $view->resolvePath($destination);
 			$targetStorage->getUpdater()->update($targetInternalPath);
+
+			if (!$result) {
+				$this->logger->error("copyNodeRecursive error: Unable to copy '$fullSourcePath' to '$fullDestinationPath'", ['app' => Application::APP_ID]);
+				return $result;
+			}
 		}
 		return $result;
-	}
-
-	/**
-	 * recursive copy to copy a whole directory
-	 *
-	 * @param View $view file view for the users root directory
-	 * @param string $source source path, relative to the users files directory
-	 * @param string $destination destination path relative to the users root directory
-	 * @return int|float
-	 * @throws Exceptions\CopyRecursiveException
-	 */
-	private static function copy_recursive(View $view, $source, $destination): int|float
-	{
-		$size = 0;
-		if ($view->is_dir($source)) {
-			$view->mkdir($destination);
-			$view->touch($destination, $view->filemtime($source));
-			foreach ($view->getDirectoryContent($source) as $i) {
-				$pathDir = $source . '/' . $i['name'];
-				if ($view->is_dir($pathDir)) {
-					$size += self::copy_recursive($view, $pathDir, $destination . '/' . $i['name']);
-				} else {
-					$size += $view->filesize($pathDir);
-					$result = $view->copy($pathDir, $destination . '/' . $i['name']);
-					if (!$result) {
-						throw new \OCA\Files_Trashbin\Exceptions\CopyRecursiveException();
-					}
-					$view->touch($destination . '/' . $i['name'], $view->filemtime($pathDir));
-				}
-			}
-		} else {
-			$size += $view->filesize($source);
-			$result = $view->copy($source, $destination);
-			if (!$result) {
-				throw new \OCA\Files_Trashbin\Exceptions\CopyRecursiveException();
-			}
-			$view->touch($destination, $view->filemtime($source));
-		}
-		return $size;
 	}
 
 	/**
@@ -363,20 +327,6 @@ class TrashbinService
 	}
 
 	/**
-	 * Returns the numeric storage id for the root of the specified uid.
-	 * 
-	 * @var string uid
-	 * @return int the numeric storage id
-	 */
-	private function getNumericStorageId(string $uid): int
-	{
-		/** @var View */
-		$view = new View('/' . $uid);
-		$root = $view->getRoot();
-		return $view->getMount($root)->getNumericStorageId();
-	}
-
-	/**
 	 * Sets up the trashbin folder if not exists yet.
 	 * The trashbin filecache items will also be created.
 	 * 
@@ -411,5 +361,23 @@ class TrashbinService
 		}
 		$fileOrFolderName = implode(".d", $exploded);
 		return [$fileOrFolderName, intval($timestamp)];
+	}
+
+	/**
+	 * Get the quota of a user
+	 *
+	 * @param IUser|null $user
+	 * @return int|\OCP\Files\FileInfo::SPACE_UNLIMITED|false|float Quota bytes
+	 */
+	private static function getUserQuota(?IUser $user)
+	{
+		if (is_null($user)) {
+			return \OCP\Files\FileInfo::SPACE_UNLIMITED;
+		}
+		$userQuota = $user->getQuota();
+		if ($userQuota === 'none') {
+			return \OCP\Files\FileInfo::SPACE_UNLIMITED;
+		}
+		return OC_Helper::computerFileSize($userQuota);
 	}
 }
