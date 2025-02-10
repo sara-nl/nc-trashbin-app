@@ -3,7 +3,7 @@
 ### Enables restore (and permanent delete) capabilities for the project owner of files/folders deleted by project users.
 
 The sharing scheme is:<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;f_account -> project-owner -> project users<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`f_account -> project-owner -> project users`<br>
 (the functional account shares a folder with the project owner, who shares the folder with the users)
 
 When a file/folder is deleted by a project user:
