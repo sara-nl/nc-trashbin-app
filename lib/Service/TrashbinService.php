@@ -35,6 +35,7 @@ use OCP\IUser;
 use OCP\IUserManager;
 use OCP\IUserSession;
 use Psr\Log\LoggerInterface;
+use OCP\Util;
 
 class TrashbinService
 {
@@ -378,6 +379,8 @@ class TrashbinService
 		if ($userQuota === 'none') {
 			return \OCP\Files\FileInfo::SPACE_UNLIMITED;
 		}
-		return OC_Helper::computerFileSize($userQuota);
+		// return OC_Helper::computerFileSize($userQuota);
+		$quota = Util::computerFileSize($userQuota);
+        return $quota;		
 	}
 }
