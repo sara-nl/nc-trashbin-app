@@ -14,9 +14,22 @@
     <author mail="antoon.prins@surf.nl" >Antoon Prins</author>
     <namespace>SURFTrashbin</namespace>
     <category>integration</category>
+    <!--
+        The 'filesystem' type ensures this app is loaded on the WebDAV/Sabre
+        (remote.php) request path. That path only loads apps of type
+        filesystem/logging/authentication, and the trashbin UI performs its
+        delete/restore/permanent-delete operations through it. Without this,
+        the App constructor never runs there, the '\OCP\Trashbin'/'delete'
+        hook slot is never registered, and permanent-delete cleanup silently
+        fails.
+    -->
+    <types>
+        <filesystem/>
+    </types>
     <bugs>https://github.com/sara-nl/nc-surf_trashbin/issues</bugs>
     <dependencies>
-        <nextcloud min-version="31" max-version="32"/>
+        <php min-version="8.2" max-version="8.5"/>
+        <nextcloud min-version="31" max-version="34"/>
     </dependencies>
 
 </info>
