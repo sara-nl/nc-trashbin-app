@@ -9,7 +9,7 @@
     <name>SURF trashbin</name>
     <summary>SURF functional accounts trashbin.</summary>
     <description><![CDATA[This app enables trashbin functionality for Research Drive functional accounts.]]></description>
-    <version>0.0.1</version>
+    <version>0.1.0</version>
     <licence>agpl</licence>
     <author mail="antoon.prins@surf.nl" >Antoon Prins</author>
     <namespace>SURFTrashbin</namespace>
