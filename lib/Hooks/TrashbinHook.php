@@ -48,6 +48,19 @@ class TrashbinHook
      */
     public function permanentDelete(array $params): void
     {
+        /**
+         * Only cascade the cleanup when a logged-in user explicitly deletes a
+         * trashbin item. The trashbin background job (auto-expiration, e.g. of a
+         * zero-quota user's trashbin, which runs within minutes via cron) and CLI
+         * maintenance commands emit this same hook. Cascading in those contexts
+         * unlinks the f_account's master trashbin copy (and the project owner's
+         * copy) while the project owner may still need to restore it - resulting
+         * in permanent data loss.
+         */
+        if ($this->userSession->getUser() === null) {
+            return;
+        }
+
         // get the filecache items and find out if we are dealing with an f_account item
         $path = $params['path'];
         /**

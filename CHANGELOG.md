@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Data-loss fix (1/2) — phantom trashbin entries after a failed copy.**
+  `TrashbinService::handleDeleteNode()` inserted the `oc_files_trash` row for the
+  project owner (and, for zero-quota deleters, the session user) **before**
+  copying the data from the f_account trashbin. When the copy failed
+  (permissions, disk full, timeout, …) the row and a partial/empty folder were
+  left behind: a *phantom* trashbin entry. Restoring or expiring that phantom
+  triggered cleanup that unlinked the f_account's master copy — permanent data
+  loss. The row is now inserted only after the copy fully succeeded, and a
+  failed partial copy is removed again (`removeFailedCopy()`).
+- **Data-loss fix (2/2) — background trashbin expiration cascaded into the
+  f_account master copy.** The `\OCP\Trashbin`/`delete` hook is also emitted by
+  the trashbin *background expiration job* (cron). For a zero-quota user, that
+  job expires the user's entire trashbin **within minutes** of any deletion, and
+  `TrashbinHook::permanentDelete()` then cascade-unlinked the f_account's (and
+  project owner's) trashbin copies — destroying the only remaining data without
+  any user action and without logging. Reproduced end-to-end on Nextcloud 34:
+  data was destroyed 62 seconds after deletion. The cascade now only runs when a
+  logged-in user explicitly deletes a trashbin item
+  (`IUserSession::getUser() !== null`); background/CLI expiration no longer
+  touches the other parties' copies.
+- Failed low-level copies now log the actual failure reason (permission denied,
+  disk full, …) captured via a temporary error handler — `@copy()` plus
+  Nextcloud's error handler used to swallow it, making production incidents
+  (Kibana: "Unable to copy") undiagnosable.
+- `TrashbinService` logged under the app id of `files_trashbin` due to a wrong
+  `Application` import; it now logs under `surf_trashbin`.
+
 ### Added
 - Support for Nextcloud 33 and 34 (`max-version` raised from 32 to 34).
 - Explicit `<php min-version="8.2" max-version="8.5"/>` dependency in `info.xml`,
