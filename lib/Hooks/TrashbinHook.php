@@ -9,10 +9,14 @@ namespace OCA\SURFTrashbin\Hooks;
 
 use Exception;
 use OC\Files\View;
+use OCA\SURFTrashbin\AppInfo\Application;
 use OCA\SURFTrashbin\Db\FileCacheMapper;
 use OCA\SURFTrashbin\Db\TrashbinMapper;
 use OCA\SURFTrashbin\Service\TrashbinService;
 use OCP\IUserSession;
+use OCP\Lock\ILockingProvider;
+use OCP\Lock\LockedException;
+use Psr\Log\LoggerInterface;
 
 class TrashbinHook
 {
@@ -28,16 +32,26 @@ class TrashbinHook
     /** @var IUserSession */
     private $userSession;
 
+    /** @var ILockingProvider */
+    private $lockingProvider;
+
+    /** @var LoggerInterface */
+    private $logger;
+
     public function __construct(
         TrashbinService $trashbinService,
         FileCacheMapper $fileCacheMapper,
         TrashbinMapper $trashbinMapper,
         IUserSession $userSession,
+        ILockingProvider $lockingProvider,
+        LoggerInterface $logger,
     ) {
         $this->trashbinService = $trashbinService;
         $this->fileCacheMapper = $fileCacheMapper;
         $this->trashbinMapper = $trashbinMapper;
         $this->userSession = $userSession;
+        $this->lockingProvider = $lockingProvider;
+        $this->logger = $logger;
     }
 
     /**
@@ -97,7 +111,41 @@ class TrashbinHook
         }
 
         $fAccountView = new View("/$fAccountUID");
-        $fAccountView->unlink($fAccountFileCacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
+        $fAccountPath = $fAccountFileCacheItem[FileCacheMapper::TABLE_COLUMN_PATH];
+
+        /**
+         * Guard against unlinking the f_account's trashbin node while another
+         * process is still copying FROM it. Nextcloud's own move2trash() holds
+         * an exclusive lock on this exact path for the duration of
+         * Trashbin::copyFilesToUser() (f_account -> deleting user), and our own
+         * handleDeleteNode() holds the same kind of window while copying to the
+         * project owner. If a user permanently deletes their trashbin item while
+         * either copy is still running, unlinking here out from under it throws
+         * an uncaught CopyRecursiveException in Nextcloud's own code and can
+         * leave every party's trashbin empty. Retry briefly instead of unlinking
+         * blindly; a concurrent copy is expected to finish within seconds.
+         */
+        [$fAccountStorage, $fAccountInternalPath] = $fAccountView->resolvePath($fAccountPath);
+        $locked = false;
+        for ($attempt = 0; $attempt < 20; $attempt++) {
+            try {
+                $fAccountStorage->acquireLock($fAccountInternalPath, ILockingProvider::LOCK_EXCLUSIVE, $this->lockingProvider);
+                $locked = true;
+                break;
+            } catch (LockedException $e) {
+                usleep(250_000);
+            }
+        }
+        if (!$locked) {
+            $this->logger->warning("permanentDelete aborted - '$fAccountPath' is still locked by a concurrent copy after waiting; the f_account trashbin copy is left untouched.", ['app' => Application::APP_ID]);
+            return;
+        }
+
+        try {
+            $fAccountView->unlink($fAccountPath);
+        } finally {
+            $fAccountStorage->releaseLock($fAccountInternalPath, ILockingProvider::LOCK_EXCLUSIVE, $this->lockingProvider);
+        }
 
         if (isset($ownerOrUserFileCacheItem)) {
             $ownerOrUserView = new View("/$ownerOrUserUID");

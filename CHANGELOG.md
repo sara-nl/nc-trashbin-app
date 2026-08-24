@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Data-loss fix (3/3) — permanent delete raced against an in-flight trashbin
+  copy and destroyed everyone's copy.** When a project user deletes a large
+  folder, both Nextcloud's own `Trashbin::copyFilesToUser()` (f_account → the
+  deleting user) and `TrashbinService::handleDeleteNode()` (f_account → the
+  project owner) copy the data from the f_account's trashbin in the background,
+  which can take a while for a large folder. If the user (or their sync client)
+  permanently deletes that trashbin item while either copy is still running,
+  `TrashbinHook::permanentDelete()` unlinked the f_account's node out from under
+  the in-progress copy, throwing an **uncaught `CopyRecursiveException`** in
+  Nextcloud's own code (HTTP 500 on the original move-to-trash request) and
+  leaving every party's trashbin empty with no data recoverable anywhere.
+  Reproduced end-to-end on Nextcloud 33/34 with a 40×500MB folder.
+  `permanentDelete()` now acquires the same kind of exclusive lock Nextcloud's
+  own `move2trash()` holds on the f_account trashbin path before unlinking it;
+  if the path is still locked by a concurrent copy it retries briefly and then
+  aborts (leaving the f_account copy untouched and logging a warning) instead
+  of unlinking blindly.
 - **Data-loss fix (1/2) — phantom trashbin entries after a failed copy.**
   `TrashbinService::handleDeleteNode()` inserted the `oc_files_trash` row for the
   project owner (and, for zero-quota deleters, the session user) **before**
