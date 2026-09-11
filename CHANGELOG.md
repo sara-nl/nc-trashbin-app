@@ -4,7 +4,7 @@ All notable changes to the SURF Trashbin app are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.1]
 
 ### Fixed
 - **Data-loss fix (3/3) — permanent delete by one party cascaded into every
