@@ -18,10 +18,10 @@
         The 'filesystem' type ensures this app is loaded on the WebDAV/Sabre
         (remote.php) request path. That path only loads apps of type
         filesystem/logging/authentication, and the trashbin UI performs its
-        delete/restore/permanent-delete operations through it. Without this,
-        the App constructor never runs there, the '\OCP\Trashbin'/'delete'
-        hook slot is never registered, and permanent-delete cleanup silently
-        fails.
+        delete/restore operations through it. Without this, the app's typed
+        event listeners (NodeDeletedEventListener, NodeRestoredEventListener)
+        never register there, and the delete-to-owner copy / restore cascade
+        silently fail.
     -->
     <types>
         <filesystem/>

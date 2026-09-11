@@ -26,7 +26,7 @@ namespace OCA\SURFTrashbin\Service;
 use Exception;
 use OC\Files\View;
 use OC_Helper;
-use OCA\Files_Trashbin\AppInfo\Application;
+use OCA\SURFTrashbin\AppInfo\Application;
 use OCA\SURFTrashbin\Db\FileCacheMapper;
 use OCA\SURFTrashbin\Db\ShareMapper;
 use OCA\SURFTrashbin\Db\TrashbinMapper;
@@ -99,7 +99,8 @@ class TrashbinService
 		}
 
 		// find the corresponding trashbin entry of the deleted node
-		[$name, $timestamp] = $this->getNameAndTimestamp($userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
+		$nodeName = $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME];
+		[$name, $timestamp] = $this->getNameAndTimestamp($nodeName);
 		$sessionUID = $this->userSession->getUser()->getUID();
 		[$fAccountUID,] = $this->getAccountUIDAndTypeFromStorageId($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_STORAGE_ID]);
 		$projectOwnerUID = $this->shareMapper->getProjectOwnerUID($fAccountUID);
@@ -111,40 +112,45 @@ class TrashbinService
 		] = array_values($this->trashbinMapper->getItem($name, $fAccountUID, $timestamp, $sessionUID));
 
 		$sessionUserQuota = self::getUserQuota($this->userSession->getUser());
-		$copyResult = false;
-		if ($sessionUserQuota == 0) {
+		if ($sessionUserQuota !== false && $sessionUserQuota == 0) {
 			// create the user's trashbin item (it's not created because the user has no quota)
 
 			$this->setUpTrash($sessionUID);
 
-			$this->trashbinMapper->insertItem(
-				$trashbinItemId,
-				$sessionUID,
-				$trashbinItemTimestamp,
-				$trashbinItemLocation,
-				$trashbinItemDeletedBy,
-			);
-			// and copy the original trashbin file to session user trashbin
-			$copyResult = $this->copyNode($fAccountUID, $sessionUID, $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
+			// Copy first; insert the trashbin row only if the copy fully succeeded.
+			// A trashbin row without (complete) data is a phantom entry: restoring or
+			// expiring it triggers cleanup that destroys the f_account's master copy.
+			if ($this->copyNode($fAccountUID, $sessionUID, $nodeName)) {
+				$this->trashbinMapper->insertItem(
+					$trashbinItemId,
+					$sessionUID,
+					$trashbinItemTimestamp,
+					$trashbinItemLocation,
+					$trashbinItemDeletedBy,
+				);
+			} else {
+				$this->removeFailedCopy($sessionUID, $nodeName);
+				$this->logger->error("handleDeleteNode error - could not copy '$nodeName' to the trashbin of session user '$sessionUID'; the f_account trashbin copy is left untouched.", ['app' => Application::APP_ID]);
+			}
 		}
 		if ($sessionUID != $projectOwnerUID) {
 			// create project owner's trashbin item (it's not created because it's a project user that deleted the node)
 
 			$this->setUpTrash($projectOwnerUID);
 
-			$this->trashbinMapper->insertItem(
-				$trashbinItemId,
-				$projectOwnerUID,
-				$trashbinItemTimestamp,
-				$trashbinItemLocation,
-				$trashbinItemDeletedBy,
-			);
-			// and copy the original trashbin file to project owner's trashbin
-			$copyResult = $this->copyNode($fAccountUID, $projectOwnerUID, $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME]);
-		}
-		if (!$copyResult) {
-			$this->logger->error(" handleDeleteNode copy error - node copy from f_account trashbin did not complete.", ['app' => Application::APP_ID]);
-			// TODO ?? throw exception if something went wrong (copyResult is false) ??
+			// Copy first; insert the trashbin row only if the copy fully succeeded (see above).
+			if ($this->copyNode($fAccountUID, $projectOwnerUID, $nodeName)) {
+				$this->trashbinMapper->insertItem(
+					$trashbinItemId,
+					$projectOwnerUID,
+					$trashbinItemTimestamp,
+					$trashbinItemLocation,
+					$trashbinItemDeletedBy,
+				);
+			} else {
+				$this->removeFailedCopy($projectOwnerUID, $nodeName);
+				$this->logger->error("handleDeleteNode error - could not copy '$nodeName' to the trashbin of project owner '$projectOwnerUID'; the f_account trashbin copy is left untouched.", ['app' => Application::APP_ID]);
+			}
 		}
 	}
 
@@ -276,15 +282,26 @@ class TrashbinService
 			}
 		} else {
 			// In case the destination user has no quota we must do a low level copy for which we use the full paths
-			$result = @copy($fullSourcePath, $fullDestinationPath);
+			// Capture the actual failure reason (permissions, disk full, missing path, ...);
+			// a plain @copy() hides it and Nextcloud's error handler keeps error_get_last() empty.
+			$copyError = null;
+			set_error_handler(function (int $severity, string $message) use (&$copyError): bool {
+				$copyError = $message;
+				return true;
+			});
+			try {
+				$result = copy($fullSourcePath, $fullDestinationPath);
+			} finally {
+				restore_error_handler();
+			}
+			if (!$result) {
+				$reason = isset($copyError) ? " - reason: $copyError" : '';
+				$this->logger->error("copyNodeRecursive error: Unable to copy '$fullSourcePath' to '$fullDestinationPath'$reason", ['app' => Application::APP_ID]);
+				return $result;
+			}
 			// And update the cache which will create the cache item for this file
 			[$targetStorage, $targetInternalPath] = $view->resolvePath($destination);
 			$targetStorage->getUpdater()->update($targetInternalPath);
-
-			if (!$result) {
-				$this->logger->error("copyNodeRecursive error: Unable to copy '$fullSourcePath' to '$fullDestinationPath'", ['app' => Application::APP_ID]);
-				return $result;
-			}
 		}
 		return $result;
 	}
@@ -328,10 +345,26 @@ class TrashbinService
 	}
 
 	/**
+	 * Removes a partially copied trashbin node (files and cache) so that no
+	 * incomplete data is left behind after a failed copy. Without this cleanup
+	 * a partial folder shows up in the trashbin as if it were a complete copy.
+	 *
+	 * @param string $uid the user whose trashbin holds the failed copy
+	 * @param string $nodeName the trashbin node name ({name}.d{timestamp})
+	 */
+	private function removeFailedCopy(string $uid, string $nodeName): void
+	{
+		$view = new View("/$uid/files_trashbin/files");
+		if ($view->file_exists($nodeName)) {
+			$view->is_dir($nodeName) ? $view->rmdir($nodeName) : $view->unlink($nodeName);
+		}
+	}
+
+	/**
 	 * Sets up the trashbin folder if not exists yet.
 	 * The trashbin filecache items will also be created.
-	 * 
-	 * @var string 
+	 *
+	 * @var string
 	 */
 	private function setUpTrash(string $uid): void
 	{

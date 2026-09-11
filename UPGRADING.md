@@ -10,9 +10,9 @@ forward-looking checklist for whoever bumps the app to NC 35+.
 ## How the app is loaded (important context)
 
 The app must be loaded on the **WebDAV/Sabre request path** (`remote.php`),
-because the Files trashbin UI performs delete / restore / permanent-delete
-through it. That path only loads apps declared with an app type of
-`filesystem`, `logging`, or `authentication`. This app therefore declares:
+because the Files trashbin UI performs delete / restore through it. That path
+only loads apps declared with an app type of `filesystem`, `logging`, or
+`authentication`. This app therefore declares:
 
 ```xml
 <types>
@@ -20,38 +20,22 @@ through it. That path only loads apps declared with an app type of
 </types>
 ```
 
-Removing this declaration silently breaks permanent-delete cleanup (the slot for
-the `\OCP\Trashbin`/`delete` hook is never registered on the WebDAV path). Keep
-it.
+Removing this declaration silently breaks the delete-to-owner copy and the
+restore cascade (the typed event listeners are never registered on the WebDAV
+path). Keep it.
+
+Note: this app does **not** hook into permanent delete. An earlier version did,
+via the legacy `Util::connectHook('\OCP\Trashbin', 'delete', …)` hook, to
+cascade a permanent delete to the other parties' trashbin copies. That cascade
+was removed — see CHANGELOG.md — because it violated each party's trashbin
+copy being independent, and could race an in-flight copy into the f_account's
+master copy. Do not re-add it without re-reading that history.
 
 ## Deprecated / internal API surfaces
 
-### 1. Legacy hook: `Util::connectHook('\OCP\Trashbin', 'delete', …)`
+### 1. Internal class: `\OC\Files\View`
 
-- **Where:** `lib/AppInfo/Application.php` (constructor) →
-  `lib/Hooks/TrashbinHook.php::permanentDelete()`.
-- **State:** `@deprecated 21.0.0`. Still fully functional on NC 33 and 34 —
-  `apps/files_trashbin/lib/Trashbin.php` still emits
-  `\OC_Hook::emit('\OCP\Trashbin', 'delete', ['path' => …])` on permanent delete,
-  and `OC_Hook` still dispatches it.
-- **Why it is still here:** there is **no typed event** for *permanent delete*
-  in the trashbin app. `apps/files_trashbin/lib/Events/` only contains
-  `BeforeNodeRestoredEvent`, `MoveToTrashEvent`, and `NodeRestoredEvent` — none
-  for permanent deletion.
-- **Why the registration is in the constructor (not `boot()`):** `IBootstrap::boot()`
-  is not invoked for this app on the WebDAV request path; the `App` constructor
-  always runs when the app is loaded. Moving the `connectHook` call into `boot()`
-  silently breaks permanent-delete. Do not move it.
-- **Migration path (NC 35+ if the hook is ever removed):** switch to the generic
-  storage-layer event `OCP\Files\Events\Node\NodeDeletedEvent`, registered via
-  `IRegistrationContext::registerEventListener()`. Caveat: that event fires for
-  **every** node deletion, so the listener must filter on the node path being
-  under `…/files_trashbin/files/` to replicate the precisely-scoped legacy hook.
-  This is a behaviour change with added complexity — only do it when forced.
-
-### 2. Internal class: `\OC\Files\View`
-
-- **Where:** `lib/Service/TrashbinService.php` and `lib/Hooks/TrashbinHook.php`
+- **Where:** `lib/Service/TrashbinService.php`
   (`new \OC\Files\View(…)`; `unlink`, `is_dir`, `mkdir`, `file_exists`,
   `getDirectoryContent`, `resolvePath`, and the
   `resolvePath() → IStorage → getUpdater()->update()` chain).
@@ -65,7 +49,7 @@ it.
   `Folder`/`File`/`Node` API. Validate the zero-quota copy path carefully — that
   is the part most coupled to `View` and the storage `Updater`.
 
-### 3. Direct SQL / table access
+### 2. Direct SQL / table access
 
 - **Where:** `lib/Db/FileCacheMapper.php` (raw SQL against `oc_filecache` /
   `oc_storages`), `lib/Db/TrashbinMapper.php`, `lib/Db/ShareMapper.php`.
@@ -87,8 +71,8 @@ it.
    server's required PHP.
 3. Bump `nextcloud/ocp` in `composer.json` to the new `dev-stableXX`.
 4. Re-run the end-to-end flow (delete → restore → permanent-delete) on a live
-   instance — unit/source checks alone do **not** catch the WebDAV-loading and
-   hook-dispatch issues that only surface at runtime.
-5. Check whether `\OCP\Trashbin`/`delete` is still emitted and whether
-   `\OC\Files\View` is still present; if either is gone, follow the migration
-   paths above.
+   instance — unit/source checks alone do **not** catch WebDAV-loading issues
+   that only surface at runtime. Confirm a permanent delete by one party still
+   leaves every other party's trashbin copy untouched (see CHANGELOG.md).
+5. Check whether `\OC\Files\View` is still present; if it's gone, follow the
+   migration path above.
