@@ -19,3 +19,27 @@ After restoring the trashbin/filecache of the f_account is cleaned up as well (s
 
 ___
 *&nbsp;Note that it does not matter whether project owners or users have quota or not, the effect is the same.
+
+## Tests
+
+The end-to-end test starts the official Nextcloud Docker image, installs the app from this
+checkout and builds the sharing scheme above: a functional account shares a project folder with
+the project owner, who reshares it with a project user and a project user without quota. It then
+deletes, restores and permanently deletes files and folders through WebDAV, as the Files app
+does, and checks the trashbin of every party. Any error in the Nextcloud log fails the run.
+
+```bash
+tests/e2e/run-docker.sh 35          # image tag: 31, 34, 35, latest, ...
+FORCE_ENABLE=1 tests/e2e/run-docker.sh latest   # a version newer than max-version
+```
+
+It needs Docker, curl and python3. `tests/e2e/e2e.sh` can also test an existing server over ssh;
+see the comment at the top of the script.
+
+`composer psalm` runs static analysis on `lib/`. `\OC\Files\View` and the files_trashbin events
+are not part of `nextcloud/ocp`, so `tests/stubs/server.php` describes the classes and methods
+this app uses; add a method there when the code starts using it.
+
+GitHub Actions runs `composer lint`, `composer cs:check` and the end-to-end test on Nextcloud 31,
+34 and 35 for every pull request, and monthly against the newest Nextcloud release. Psalm runs
+against the `nextcloud/ocp` of the oldest and the newest Nextcloud that `info.xml` allows.

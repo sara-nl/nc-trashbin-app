@@ -25,7 +25,6 @@ namespace OCA\SURFTrashbin\Service;
 
 use Exception;
 use OC\Files\View;
-use OC_Helper;
 use OCA\SURFTrashbin\AppInfo\Application;
 use OCA\SURFTrashbin\Db\FileCacheMapper;
 use OCA\SURFTrashbin\Db\ShareMapper;
@@ -81,7 +80,7 @@ class TrashbinService
 	 * This method makes sure that in case it is a project user who deletes the files
 	 * these files appear in the trashbin of the project owner as well.
 	 * 
-	 * @var Node the deleted node
+	 * @param Node $nodeDeleted the deleted node
 	 * @return void
 	 */
 	public function handleDeleteNode(Node $nodeDeleted): void
@@ -98,20 +97,33 @@ class TrashbinService
 			return;
 		}
 
+		$sessionUser = $this->userSession->getUser();
+		if ($sessionUser === null) {
+			// no user deleted the node (e.g. a background job), so there is no project user to copy for
+			return;
+		}
+
 		// find the corresponding trashbin entry of the deleted node
 		$nodeName = $userAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_NAME];
 		[$name, $timestamp] = $this->getNameAndTimestamp($nodeName);
-		$sessionUID = $this->userSession->getUser()->getUID();
+		$sessionUID = $sessionUser->getUID();
 		[$fAccountUID,] = $this->getAccountUIDAndTypeFromStorageId($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_STORAGE_ID]);
+		if ($timestamp === null || $fAccountUID === null) {
+			// the node is not in a trashbin
+			return;
+		}
 		$projectOwnerUID = $this->shareMapper->getProjectOwnerUID($fAccountUID);
-		[
-			$trashbinItemId,,
-			$trashbinItemTimestamp,
-			$trashbinItemLocation,
-			$trashbinItemDeletedBy
-		] = array_values($this->trashbinMapper->getItem($name, $fAccountUID, $timestamp, $sessionUID));
+		$trashbinItem = $this->trashbinMapper->getItem($name, $fAccountUID, $timestamp, $sessionUID);
+		if ($trashbinItem === null) {
+			$this->logger->error("handleDeleteNode error - no trashbin item of '$fAccountUID' found for '$nodeName' deleted by '$sessionUID'.", ['app' => Application::APP_ID]);
+			return;
+		}
+		$trashbinItemId = $trashbinItem[TrashbinMapper::TABLE_COLUMN_ID];
+		$trashbinItemTimestamp = $trashbinItem[TrashbinMapper::TABLE_COLUMN_TIMESTAMP];
+		$trashbinItemLocation = $trashbinItem[TrashbinMapper::TABLE_COLUMN_LOCATION];
+		$trashbinItemDeletedBy = $trashbinItem[TrashbinMapper::TABLE_COLUMN_DELETED_BY];
 
-		$sessionUserQuota = self::getUserQuota($this->userSession->getUser());
+		$sessionUserQuota = self::getUserQuota($sessionUser);
 		if ($sessionUserQuota !== false && $sessionUserQuota == 0) {
 			// create the user's trashbin item (it's not created because the user has no quota)
 
@@ -133,7 +145,9 @@ class TrashbinService
 				$this->logger->error("handleDeleteNode error - could not copy '$nodeName' to the trashbin of session user '$sessionUID'; the f_account trashbin copy is left untouched.", ['app' => Application::APP_ID]);
 			}
 		}
-		if ($sessionUID != $projectOwnerUID) {
+		if ($projectOwnerUID === '') {
+			$this->logger->error("handleDeleteNode error - no project owner found for '$fAccountUID'; '$nodeName' is not copied to the trashbin of a project owner.", ['app' => Application::APP_ID]);
+		} elseif ($sessionUID != $projectOwnerUID) {
 			// create project owner's trashbin item (it's not created because it's a project user that deleted the node)
 
 			$this->setUpTrash($projectOwnerUID);
@@ -164,7 +178,7 @@ class TrashbinService
 		$name = $sourceNode->getName(); // format: {folder-or-filename}.d{timestamp}{/any-sub-folder-path}
 
 		[$fileOrFolderName, $timestamp] = $this->getNameAndTimestamp($name);
-		if (isset($fileOrFolderName) && !isset($timestamp)) {
+		if ($timestamp === null) {
 			// this must be a sub node restored; follow normal behaviour and just return
 			return;
 		}
@@ -187,6 +201,10 @@ class TrashbinService
 			} else {
 				$userTrashbinItem = $item;
 			}
+		}
+		if ($fAccountTrashbinItem === null) {
+			// we are not dealing with restoring a node on an f_account, e.g. a node of a regular share
+			return;
 		}
 
 		// get the filecache items
@@ -211,13 +229,15 @@ class TrashbinService
 		$projectOwnerUID = isset($ownerTrashbinItem) ? $ownerTrashbinItem[TrashbinMapper::TABLE_COLUMN_USER] : null;
 
 		// unlink all filecache items
-		$fAccountView = new View("/$fAccountUID");
-		$fAccountView->unlink($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
+		if (isset($fAccountFilecacheItem)) {
+			$fAccountView = new View("/$fAccountUID");
+			$fAccountView->unlink($fAccountFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
+		}
 		if (isset($ownerFilecacheItem)) {
 			$ownerView = new View("/$projectOwnerUID");
 			$ownerView->unlink($ownerFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
 		}
-		if (isset($userFilecacheItem)) {
+		if (isset($userFilecacheItem, $userTrashbinItem)) {
 			$userUID = $userTrashbinItem[TrashbinMapper::TABLE_COLUMN_USER];
 			$userView = new View("/$userUID");
 			$userView->unlink($userFilecacheItem[FileCacheMapper::TABLE_COLUMN_PATH]);
@@ -243,8 +263,14 @@ class TrashbinService
 			throw new Exception("Node '$source' does not exist for user '$fromUID'.");
 		}
 
-		$fullSourcePath = $this->userManager->get($fromUID)->getHome() . "/files_trashbin/files/$nodeName";
-		$fullDestinationPath = $this->userManager->get($toUID)->getHome() . "/files_trashbin/files/$nodeName";
+		$fromUser = $this->userManager->get($fromUID);
+		$toUser = $this->userManager->get($toUID);
+		if ($fromUser === null || $toUser === null) {
+			$this->logger->error("copyNode error - user '$fromUID' or '$toUID' does not exist", ['app' => Application::APP_ID]);
+			return false;
+		}
+		$fullSourcePath = $fromUser->getHome() . "/files_trashbin/files/$nodeName";
+		$fullDestinationPath = $toUser->getHome() . "/files_trashbin/files/$nodeName";
 
 		$copyResult = $this->copyNodeRecursive($view, $source, $destination, $fullSourcePath, $fullDestinationPath);
 		if (!$copyResult) {
@@ -271,10 +297,10 @@ class TrashbinService
 				return $result;
 			}
 			foreach ($view->getDirectoryContent($source) as $i) {
-				$path = $source . '/' . $i['name'];
-				$target = $destination . '/' . $i['name'];
-				$_fullSourcePath = $fullSourcePath . '/' . $i['name'];
-				$_fullDestinationPath = $fullDestinationPath . '/' . $i['name'];
+				$path = $source . '/' . $i->getName();
+				$target = $destination . '/' . $i->getName();
+				$_fullSourcePath = $fullSourcePath . '/' . $i->getName();
+				$_fullDestinationPath = $fullDestinationPath . '/' . $i->getName();
 				$result = $this->copyNodeRecursive($view, $path, $target, $_fullSourcePath, $_fullDestinationPath);
 				if (!$result) {
 					break;
@@ -301,6 +327,10 @@ class TrashbinService
 			}
 			// And update the cache which will create the cache item for this file
 			[$targetStorage, $targetInternalPath] = $view->resolvePath($destination);
+			if ($targetStorage === null) {
+				$this->logger->error("copyNodeRecursive error: No storage found for '$destination'", ['app' => Application::APP_ID]);
+				return false;
+			}
 			$targetStorage->getUpdater()->update($targetInternalPath);
 		}
 		return $result;
@@ -309,9 +339,12 @@ class TrashbinService
 	/**
 	 * Returns the f_account filecache item for the specified fileid or null if it is not an f_account item.
 	 */
-	public function getFAccountFilecacheItem(int $fileId)
+	public function getFAccountFilecacheItem(int $fileId): ?array
 	{
 		$item = $this->fileCacheMapper->getItemByFileId($fileId);
+		if (!isset($item[FileCacheMapper::TABLE_COLUMN_STORAGE_ID])) {
+			return null;
+		}
 		[, $accountType] = $this->getAccountUIDAndTypeFromStorageId($item[FileCacheMapper::TABLE_COLUMN_STORAGE_ID]);
 		if (self::ACCOUNT_TYPE_F_ACCOUNT == $accountType) {
 			return $item;
@@ -325,23 +358,17 @@ class TrashbinService
 	 * 		TrashbinService::ACCOUNT_UID => 'uid',
 	 * 		TrashbinService::ACCOUNT_TYPE => 'f_account' or 'user'
 	 * ]
-	 * @return array {string account_uid, string account_type} -- the account array or an empty array if the account could not be retrieved
+	 * @return array{0: ?string, 1: ?string} -- [account uid, account type], or [null, null] if the account could not be retrieved
 	 */
 	public function getAccountUIDAndTypeFromStorageId(string $storageId): array
 	{
-		$account = [];
 		$fragments = \explode('::', $storageId);
 		$accountUID = \count($fragments) == 2 ? $fragments[1] : null;
 		if (!isset($accountUID)) {
 			return [null, null];
 		}
-		array_push($account, $accountUID);
-		if (\str_starts_with($accountUID, 'f_')) {
-			array_push($account, self::ACCOUNT_TYPE_F_ACCOUNT);
-		} else {
-			array_push($account, self::ACCOUNT_TYPE_USER);
-		}
-		return $account;
+		$accountType = \str_starts_with($accountUID, 'f_') ? self::ACCOUNT_TYPE_F_ACCOUNT : self::ACCOUNT_TYPE_USER;
+		return [$accountUID, $accountType];
 	}
 
 	/**
@@ -364,7 +391,7 @@ class TrashbinService
 	 * Sets up the trashbin folder if not exists yet.
 	 * The trashbin filecache items will also be created.
 	 *
-	 * @var string
+	 * @param string $uid
 	 */
 	private function setUpTrash(string $uid): void
 	{
@@ -381,8 +408,8 @@ class TrashbinService
 	 * Splits the specified name into name and timestamp parts and returns them.
 	 * If no timestamp postfix is found then only the name is returned, ie. return [$fileOrFoldername, null]
 	 * 
-	 * @param string name
-	 * @return array {string fileOrFoldername, int timestamp}
+	 * @param string $name
+	 * @return array{0: string, 1: ?int} [fileOrFoldername, timestamp]
 	 */
 	public function getNameAndTimestamp(string $name): array
 	{
