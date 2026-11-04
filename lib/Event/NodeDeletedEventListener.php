@@ -7,6 +7,7 @@ use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\Files\Events\Node\NodeDeletedEvent;
 
+/** @template-implements IEventListener<NodeDeletedEvent> */
 class NodeDeletedEventListener implements IEventListener
 {
 
@@ -24,7 +25,6 @@ class NodeDeletedEventListener implements IEventListener
      * that will make the deleted node visible in the trashbin of the owner of the shared folder.
      * 
      * @param Event $event
-     * @psalm-param T $event
      * @return void
      */
     public function handle(Event $event): void

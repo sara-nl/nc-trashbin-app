@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace OCA\SURFTrashbin\Db;
 
-use OCA\Files_Trashbin\AppInfo\Application;
+use OCA\SURFTrashbin\AppInfo\Application;
 use OCP\AppFramework\Db\QBMapper;
 use OCP\IDBConnection;
 use PDO;
 use Psr\Log\LoggerInterface;
 
+/**
+ * @psalm-type TrashbinItem = array{id: string, user: string, timestamp: int, location: string, deleted_by: string}
+ * @template-extends QBMapper<\OCP\AppFramework\Db\Entity>
+ */
 class TrashbinMapper extends QBMapper
 {
 
@@ -36,11 +40,11 @@ class TrashbinMapper extends QBMapper
      * 
      * @param string $id the id of the trashbin item to retrieve
      * @param string $user the user of the trashbin item to retrieve
-     * @param string $timestamp the timestamp of the trashbin item to retrieve
+     * @param int $timestamp the timestamp of the trashbin item to retrieve
      * @param string $deletedBy the user that deleted the trashbin item to retrieve
-     * @return array {string id, string user, int timestamp, string location, string deletedBy} the trashbin item array or an empty array if not retrieved
+     * @return ?TrashbinItem the trashbin item array or null if not retrieved
      */
-    public function getItem(string $id, string $user, int $timestamp, string $deletedBy)
+    public function getItem(string $id, string $user, int $timestamp, string $deletedBy): ?array
     {
         $query = $this->db->getQueryBuilder();
         $query->select('*')
@@ -54,24 +58,18 @@ class TrashbinMapper extends QBMapper
         $statement->closeCursor();
 
         $items = \array_map(function ($item) {
-            return [
-                self::TABLE_COLUMN_ID => $item[self::TABLE_COLUMN_ID],
-                self::TABLE_COLUMN_USER => $item[self::TABLE_COLUMN_USER],
-                self::TABLE_COLUMN_TIMESTAMP => $item[self::TABLE_COLUMN_TIMESTAMP],
-                self::TABLE_COLUMN_LOCATION => $item[self::TABLE_COLUMN_LOCATION],
-                self::TABLE_COLUMN_DELETED_BY => $item[self::TABLE_COLUMN_DELETED_BY],
-            ];
+            return $this->result2Item($item);
         }, $result);
 
-        return count($items) == 1 ? $items[0] : [];
+        return count($items) == 1 ? $items[0] : null;
     }
 
     /**
      * @param string $id the id of the trashbin item to retrieve
-     * @param string $timestamp the timestamp of the trashbin item to retrieve
-     * @return array an array of trashbin items as column/value arrays
+     * @param int $timestamp the timestamp of the trashbin item to retrieve
+     * @return array<TrashbinItem> the trashbin items as column/value arrays
      */
-    public function getItems(string $id, int $timestamp)
+    public function getItems(string $id, int $timestamp): array
     {
         $query = $this->db->getQueryBuilder();
         $query->select('*')
@@ -83,13 +81,7 @@ class TrashbinMapper extends QBMapper
         $statement->closeCursor();
 
         $items = \array_map(function ($item) {
-            return [
-                self::TABLE_COLUMN_ID => $item[self::TABLE_COLUMN_ID],
-                self::TABLE_COLUMN_USER => $item[self::TABLE_COLUMN_USER],
-                self::TABLE_COLUMN_TIMESTAMP => $item[self::TABLE_COLUMN_TIMESTAMP],
-                self::TABLE_COLUMN_LOCATION => $item[self::TABLE_COLUMN_LOCATION],
-                self::TABLE_COLUMN_DELETED_BY => $item[self::TABLE_COLUMN_DELETED_BY],
-            ];
+            return $this->result2Item($item);
         }, $result);
 
         return $items;
@@ -118,9 +110,9 @@ class TrashbinMapper extends QBMapper
     /**
      * Delete the trashbin items with the specified id and timestamp.
      * 
-     * @var string $id
-     * @var int $timestamp
-     * @var string $uid
+     * @param string $id
+     * @param int $timestamp
+     * @param string $uid
      * @return int the number of items deleted
      */
     public function deleteItems(string $id, int $timestamp, string $uid): int
@@ -136,5 +128,19 @@ class TrashbinMapper extends QBMapper
             $this->logger->error('Unable to delete trashbin items.', ['app' => Application::APP_ID]);
         }
         return $result;
+    }
+
+    /**
+     * @return TrashbinItem
+     */
+    private function result2Item(array $item): array
+    {
+        return [
+            self::TABLE_COLUMN_ID => (string)$item[self::TABLE_COLUMN_ID],
+            self::TABLE_COLUMN_USER => (string)$item[self::TABLE_COLUMN_USER],
+            self::TABLE_COLUMN_TIMESTAMP => (int)$item[self::TABLE_COLUMN_TIMESTAMP],
+            self::TABLE_COLUMN_LOCATION => (string)$item[self::TABLE_COLUMN_LOCATION],
+            self::TABLE_COLUMN_DELETED_BY => (string)$item[self::TABLE_COLUMN_DELETED_BY],
+        ];
     }
 }

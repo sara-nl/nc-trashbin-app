@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace OCA\SURFTrashbin\Db;
 
 use Exception;
-use OCA\Files_Trashbin\AppInfo\Application;
+use OCA\SURFTrashbin\AppInfo\Application;
 use OCP\AppFramework\Db\QBMapper;
 use OCP\IDBConnection;
 use PDO;
 use Psr\Log\LoggerInterface;
 
+/** @template-extends QBMapper<\OCP\AppFramework\Db\Entity> */
 class FileCacheMapper extends QBMapper
 {
 
@@ -60,7 +61,7 @@ class FileCacheMapper extends QBMapper
                  on s.numeric_id = fc1.storage
                 where fc1.fileid=?
                 SQL,
-                [$fileid]
+                [(string)$fileid]
             );
             $result = $statement->fetchAll(PDO::FETCH_ASSOC);
             $statement->closeCursor();
@@ -132,7 +133,7 @@ class FileCacheMapper extends QBMapper
                  on s.numeric_id = fc1.storage
                 where fc2.fileid=?
                 SQL,
-                [$fAccountFileid]
+                [(string)$fAccountFileid]
             );
             $result = $statement->fetchAll(PDO::FETCH_ASSOC);
             $statement->closeCursor();
@@ -167,8 +168,8 @@ class FileCacheMapper extends QBMapper
     /**
      * Insert the specified filecache item.
      * 
-     * @param filecache item as associative array
-     * @return the number of affected rows
+     * @param array $filecacheItem the filecache item as associative array
+     * @return int the number of affected rows
      */
     public function insertItem(array $filecacheItem): int
     {
@@ -204,9 +205,8 @@ class FileCacheMapper extends QBMapper
     /**
      * Returns the 'root' (files_trashbin/files) filecache item for the specified storage.
      * 
-     * @var int the numeric storage id
-     * @return array {string fileid, int storage, string path, string path_hash, int parent, string name, int mimetype, int mimepart, int size, int mtime, int storage_mtime, int encrypted, int unencrypted_size, string etag, int permissions, string checksum}
-     * -- the filecache item
+     * @param string $storage the numeric storage id
+     * @return array the filecache item as column/value array, or an empty array if not retrieved
      */
     public function getTrashbinRootItem(string $storage): array
     {

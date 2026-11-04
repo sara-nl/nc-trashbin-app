@@ -77,29 +77,16 @@ lint-fix-watch:
 clean-git: clean
 	git checkout -- dist
 
-# Code sniffing: PSR-12 is followed 
-# full check, gives all errors and warnings
-.PHONY: php-codesniffer-full
-php-codesniffer-full:
-	$(CURDIR)/vendor/bin/phpcs appinfo/ lib/ templates/ tests/docker/integration-tests/src --standard=PSR12 --report=full
+# Code style and static analysis, see composer.json
+.PHONY: cs-check cs-fix psalm
+cs-check:
+	composer cs:check
 
-# check for errors only, ignoring warnings
-.PHONY: php-codesniffer-errors
-php-codesniffer-errors:
-	$(CURDIR)/vendor/bin/phpcs \
-		appinfo/ \
-		lib/ \
-		templates/ --standard=PSR12 --report=full --warning-severity=0
-		# TODO tests/docker/integration-tests/src --standard=PSR12 --report=full --warning-severity=0
+cs-fix:
+	composer cs:fix
 
-# should fix (most) errors
-.PHONY: php-codesniffer-errors-fix
-php-codesniffer-errors-fix:
-	$(CURDIR)/vendor/bin/phpcbf \
-		appinfo/ \
-		lib/ \
-		templates/ --standard=PSR12
-		# TODO tests/docker/integration-tests/src --standard=PSR12
+psalm:
+	composer psalm
 
 # Fetches the PHP and JS dependencies and compiles the JS. If no composer.json
 # is present, the composer step is skipped, if no package.json or js/package.json
@@ -199,6 +186,9 @@ buildapp:
 	--exclude="$(app_name)/*.log" \
 	--exclude="$(app_name)/phpunit*xml" \
 	--exclude="$(app_name)/composer.*" \
+	--exclude="$(app_name)/vendor" \
+	--exclude="$(app_name)/vendor-bin" \
+	--exclude="$(app_name)/psalm.xml" \
 	--exclude="$(app_name)/node_modules" \
 	--exclude="$(app_name)/js/node_modules" \
 	--exclude="$(app_name)/js/tests" \

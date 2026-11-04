@@ -4,6 +4,44 @@ All notable changes to the SURF Trashbin app are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0]
+
+### Added
+- Support for Nextcloud 35 and 36 (`max-version` raised from 34 to 36). No
+  change to the trashbin logic was needed: every API the app uses is unchanged
+  on `stable35` and `master`. Nextcloud 35 and 36 need PHP 8.3 or newer.
+- End-to-end test (`tests/e2e/`) that builds the functional account sharing
+  scheme in the official Nextcloud Docker image and checks delete, restore and
+  permanent delete for every party, including a project user without quota.
+- Psalm static analysis at error level 3, against the `nextcloud/ocp` of the
+  oldest and the newest supported Nextcloud.
+- GitHub Actions: lint, code style, psalm and the end-to-end test on every pull
+  request, and monthly against the newest Nextcloud release.
+
+### Fixed
+- **Restoring a file deleted from a regular share (not a functional account
+  folder) failed with HTTP 500.** Such a restore also finds two trashbin rows
+  (the sharer's and the deleter's), so `handleRestoreNode()` took it for a
+  functional account restore and called `unlink()` and `deleteItems()` with
+  the `null` functional account row. The file itself was restored. It now
+  returns early when none of the rows belongs to a functional account; the
+  end-to-end test covers this.
+- A delete whose functional account trashbin row cannot be found is now logged
+  and skipped, instead of throwing a `TypeError`.
+- `ShareMapper::getProjectOwnerUID()` returned `null` despite its `string`
+  return type when the functional account has no project owner share, so a
+  delete in such a folder threw a `TypeError`. It now returns `''`, and the
+  owner copy is skipped and logged.
+- A node deleted without a logged-in user no longer fails on
+  `getUser()->getUID()`.
+- `FileCacheMapper` and `TrashbinMapper` logged under the app id of
+  `files_trashbin`; they now log under `surf_trashbin`.
+
+### Changed
+- Code style is checked with `nextcloud/coding-standard` (php-cs-fixer)
+  instead of PSR-12 phpcs; dev tools are installed with
+  `bamarni/composer-bin-plugin` and left out of the app package.
+
 ## [0.1.1]
 
 ### Fixed

@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Monthly run against the newest Nextcloud release, to notice early when a new version breaks the app
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - run: composer lint
+      - run: composer cs:check
+
+  psalm:
+    name: psalm (${{ matrix.bound }} Nextcloud version)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest and the newest Nextcloud that min-version and max-version in info.xml allow
+        bound: [min, max]
+    steps:
+      - uses: actions/checkout@v7
+      - id: versions
+        uses: nextcloud-libraries/nextcloud-version-matrix@v1.3.3
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - name: Install nextcloud/ocp of that version
+        env:
+          BRANCH: ${{ matrix.bound == 'min' && steps.versions.outputs.branches-min || steps.versions.outputs.branches-max }}
+        run: composer require --dev "nextcloud/ocp:dev-$BRANCH" --ignore-platform-reqs --with-dependencies --no-interaction --no-progress
+      - run: composer psalm -- --no-progress --output-format=github
+
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported Nextcloud and the two newest releases
+        nextcloud: ['31', '34', '35']
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/e2e/run-docker.sh ${{ matrix.nextcloud }}
+
+  e2e-latest:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/e2e/run-docker.sh latest
+        env:
+          # The newest release can be newer than max-version in info.xml
+          FORCE_ENABLE: '1'

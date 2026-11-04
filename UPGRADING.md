@@ -2,10 +2,10 @@
 
 This document tracks the Nextcloud APIs this app depends on that are
 **deprecated or internal**, the risk they carry for future major versions, and
-the recommended migration path. None of these are broken on Nextcloud 31–34
-(verified against the `stable33`/`stable34` server source and end-to-end on a
-live NC 33.0.4 instance), so **no action is required today** — this is a
-forward-looking checklist for whoever bumps the app to NC 35+.
+the recommended migration path. None of these are broken on Nextcloud 31–36
+(verified against the `stable35` and `master` (36) server source, and with the
+end-to-end test on Nextcloud 35.0.2), so **no action is required today** — this
+is a forward-looking checklist for whoever bumps the app to NC 37+.
 
 ## How the app is loaded (important context)
 
@@ -40,12 +40,12 @@ master copy. Do not re-add it without re-reading that history.
   `getDirectoryContent`, `resolvePath`, and the
   `resolvePath() → IStorage → getUpdater()->update()` chain).
 - **State:** `@internal since 33.0.0` (note: **internal**, not `@deprecated`).
-  No runtime warning, no removal scheduled in 33/34. All methods exist with
-  backward-compatible signatures on both branches.
+  No runtime warning, no removal scheduled up to 36. All methods exist with
+  backward-compatible signatures up to `master` (36).
 - **Why it is still here:** the app does low-level trashbin file manipulation
   (including a raw `copy()` plus a cache `update()` for the zero-quota case) that
   has no clean equivalent in the public Node API today.
-- **Migration path (NC 35+):** move to `OCP\Files\IRootFolder` and the
+- **Migration path (NC 37+):** move to `OCP\Files\IRootFolder` and the
   `Folder`/`File`/`Node` API. Validate the zero-quota copy path carefully — that
   is the part most coupled to `View` and the storage `Updater`.
 
@@ -53,7 +53,7 @@ master copy. Do not re-add it without re-reading that history.
 
 - **Where:** `lib/Db/FileCacheMapper.php` (raw SQL against `oc_filecache` /
   `oc_storages`), `lib/Db/TrashbinMapper.php`, `lib/Db/ShareMapper.php`.
-- **State:** works on 33/34. `QBMapper`, `IDBConnection::getQueryBuilder()`,
+- **State:** works on 31–36. `QBMapper`, `IDBConnection::getQueryBuilder()`,
   `executeQuery()`, `executeStatement()` are all non-deprecated. NC 34 adds a
   soft `@note` suggesting `getTypedQueryBuilder()` but does **not** deprecate the
   current methods.
@@ -67,12 +67,14 @@ master copy. Do not re-add it without re-reading that history.
 ## Quick checklist when bumping to a new Nextcloud major
 
 1. Raise `<nextcloud max-version>` in `appinfo/info.xml`.
-2. Confirm the PHP range in `info.xml` and `composer.json` still matches the
-   server's required PHP.
-3. Bump `nextcloud/ocp` in `composer.json` to the new `dev-stableXX`.
-4. Re-run the end-to-end flow (delete → restore → permanent-delete) on a live
-   instance — unit/source checks alone do **not** catch WebDAV-loading issues
-   that only surface at runtime. Confirm a permanent delete by one party still
-   leaves every other party's trashbin copy untouched (see CHANGELOG.md).
+2. Confirm the PHP range in `info.xml` still matches the server's required PHP.
+3. Psalm in CI checks the app against the `nextcloud/ocp` of the oldest and the
+   newest Nextcloud in `info.xml`; if the new version changes a signature of
+   `\OC\Files\View`, update `tests/stubs/server.php`.
+4. Run the end-to-end test on the new version (`tests/e2e/run-docker.sh <tag>`,
+   and add the tag to the e2e matrix in `.github/workflows/tests.yml`) — source
+   checks alone do **not** catch WebDAV-loading issues that only surface at
+   runtime. It also checks that a permanent delete by one party leaves every
+   other party's trashbin copy untouched (see CHANGELOG.md).
 5. Check whether `\OC\Files\View` is still present; if it's gone, follow the
    migration path above.

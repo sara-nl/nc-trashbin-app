@@ -9,6 +9,7 @@ use OCP\AppFramework\Db\QBMapper;
 use OCP\IDBConnection;
 use PDO;
 
+/** @template-extends QBMapper<\OCP\AppFramework\Db\Entity> */
 class ShareMapper extends QBMapper
 {
 
@@ -47,6 +48,6 @@ class ShareMapper extends QBMapper
             throw new Exception('Expecting one owner, found ' . \count($result));
         }
 
-        return \count($result) == 1 ? $result[0][self::TABLE_COLUMN_SHARE_WITH] : null;
+        return \count($result) == 1 ? (string)$result[0][self::TABLE_COLUMN_SHARE_WITH] : '';
     }
 }
